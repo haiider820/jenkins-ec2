@@ -2,17 +2,35 @@ pipeline {
     agent any
 
     environment {
-        DEPLOY_PATH = "/var/www/laravel-app"
+        APP_DIR = '/var/www/laravel-app'
     }
 
     stages {
-
-        stage('Pull Code') {
+        stage('Checkout') {
             steps {
-                echo 'Pulling latest code from GitHub...'
+                git branch: 'main',
+                    url: 'https://github.com/haiider820/jenkins-ec2.git'
+            }
+        }
+
+        stage('Prepare App Directory') {
+            steps {
                 sh '''
-                cd $DEPLOY_PATH
-                git pull origin main
+                    sudo mkdir -p $APP_DIR
+                    sudo chown -R jenkins:jenkins $APP_DIR
+                '''
+            }
+        }
+
+        stage('Copy Project Files') {
+            steps {
+                sh '''
+                    rsync -av --delete \
+                    --exclude='.git' \
+                    --exclude='.env' \
+                    --exclude='vendor' \
+                    --exclude='node_modules' \
+                    ./ $APP_DIR/
                 '''
             }
         }
@@ -20,28 +38,36 @@ pipeline {
         stage('Install Dependencies') {
             steps {
                 sh '''
-                cd $DEPLOY_PATH
-                composer install --no-interaction --prefer-dist --optimize-autoloader
+                    cd $APP_DIR
+                    composer install --no-interaction --prefer-dist --optimize-autoloader --no-dev
                 '''
             }
         }
 
-        stage('Migrate Database') {
+        stage('Build Frontend Assets') {
             steps {
                 sh '''
-                cd $DEPLOY_PATH
-                php artisan migrate --force
+                    cd $APP_DIR
+                    if [ -f package.json ]; then
+                        npm install
+                        npm run build
+                    fi
                 '''
             }
         }
 
-        stage('Optimize Laravel') {
+        stage('Laravel Commands') {
             steps {
                 sh '''
-                cd $DEPLOY_PATH
-                php artisan config:cache
-                php artisan route:cache
-                php artisan view:cache
+                    cd $APP_DIR
+
+                    php artisan migrate --force
+                    php artisan config:cache
+                    php artisan route:cache
+                    php artisan view:cache
+
+                    sudo chown -R www-data:www-data storage bootstrap/cache
+                    sudo chmod -R 775 storage bootstrap/cache
                 '''
             }
         }
@@ -49,8 +75,8 @@ pipeline {
         stage('Restart Services') {
             steps {
                 sh '''
-                sudo systemctl restart php8.3-fpm
-                sudo systemctl restart nginx
+                    sudo systemctl restart php8.3-fpm || sudo systemctl restart php8.2-fpm || true
+                    sudo systemctl restart nginx
                 '''
             }
         }
@@ -58,10 +84,10 @@ pipeline {
 
     post {
         success {
-            echo '🚀 Deployment Successful!'
+            echo 'Laravel deployed successfully'
         }
         failure {
-            echo '❌ Deployment Failed!'
+            echo 'Deployment failed'
         }
     }
 }
